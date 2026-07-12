@@ -37,10 +37,13 @@ data/processed/*
 # Models
 models/*
 !models/.gitkeep
+!models/*.joblib
 
 # MLflow
 mlruns/
 mlartifacts/
+mlflow.db
+src/mlflow.db
 
 # Testing
 .pytest_cache/

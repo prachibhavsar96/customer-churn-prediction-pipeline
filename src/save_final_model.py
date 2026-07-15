@@ -3,11 +3,17 @@ from pathlib import Path
 import joblib
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-PROCESSED_DIR = Path(__file__).resolve().parent.parent / "data" / "processed"
-RAW_DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "raw" / "WA_Fn-UseC_-Telco-Customer-Churn.csv"
+CLEANED_PATH = Path(__file__).resolve().parent.parent / "data" / "processed" / "cleaned.csv"
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
 MODEL_PATH = MODELS_DIR / "churn_model.joblib"
@@ -30,58 +36,67 @@ ONE_HOT_COLS = [
     "Contract",
     "PaperlessBilling",
     "PaymentMethod",
+    "tenure_bucket",
 ]
-INTERNET_DEPENDENT_COLS = [
+SERVICE_COLS = [
     "OnlineSecurity",
     "OnlineBackup",
     "DeviceProtection",
     "TechSupport",
     "StreamingTV",
     "StreamingMovies",
+    "MultipleLines",
 ]
-NUMERIC_COLS = ["tenure", "MonthlyCharges", "TotalCharges"]
+# Matches train_improved.py's LogisticRegression_Balanced exactly (5 numeric
+# columns, including total_services) so the reproduced metrics line up.
+NUMERIC_COLS = ["tenure", "MonthlyCharges", "TotalCharges", "total_services", "avg_monthly_spend"]
+
+EXPECTED_METRICS = {
+    "accuracy": 0.7360,
+    "precision": 0.5017,
+    "recall": 0.7941,
+    "f1": 0.6149,
+    "roc_auc": 0.8420,
+}
 
 
-def fit_scaler_on_raw_data():
-    # X_train.csv already has tenure/MonthlyCharges/TotalCharges scaled --
-    # feature_engineering.py applies StandardScaler before saving but never
-    # persists the fitted scaler. Fitting a *new* scaler directly on those
-    # already-scaled columns would fit on data with mean~0/std~1, producing
-    # a broken scaler that double-transforms real incoming raw values.
-    # Instead, reproduce feature_engineering.py's exact cleaning + encoding
-    # + split (same random_state=42) to recover the true raw X_train numeric
-    # columns, and fit the scaler on those -- this is the scaler that
-    # actually matches what produced the saved CSVs.
-    df = pd.read_csv(RAW_DATA_PATH)
-    df = df.drop(columns=["customerID"])
+def add_engineered_features(df):
+    df = df.copy()
 
-    df["TotalCharges"] = pd.to_numeric(df["TotalCharges"].str.strip(), errors="coerce")
-    df["TotalCharges"] = df["TotalCharges"].fillna(0)
+    df["tenure_bucket"] = pd.cut(
+        df["tenure"],
+        bins=[-1, 12, 36, df["tenure"].max()],
+        labels=["New", "Mid", "Loyal"],
+    ).astype(str)
 
-    df["Churn"] = df["Churn"].map({"Yes": 1, "No": 0})
+    df["total_services"] = (df[SERVICE_COLS] == "Yes").sum(axis=1)
 
-    df["MultipleLines"] = df["MultipleLines"].replace("No phone service", "No")
-    for col in INTERNET_DEPENDENT_COLS:
-        df[col] = df[col].replace("No internet service", "No")
+    df["avg_monthly_spend"] = df["TotalCharges"] / df["tenure"]
+    df.loc[df["tenure"] == 0, "avg_monthly_spend"] = df.loc[df["tenure"] == 0, "MonthlyCharges"]
+
+    return df
+
+
+def main():
+    df = pd.read_csv(CLEANED_PATH)
+    df = add_engineered_features(df)
 
     df_encoded = pd.get_dummies(df, columns=ONE_HOT_COLS, drop_first=True)
+
     X = df_encoded.drop(columns=["Churn"])
     y = df_encoded["Churn"]
 
-    X_train_raw, _, _, _ = train_test_split(
+    X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, stratify=y, random_state=42
     )
 
     scaler = StandardScaler()
-    scaler.fit(X_train_raw[NUMERIC_COLS])
-    return scaler
+    X_train = X_train.copy()
+    X_test = X_test.copy()
+    X_train[NUMERIC_COLS] = scaler.fit_transform(X_train[NUMERIC_COLS])
+    X_test[NUMERIC_COLS] = scaler.transform(X_test[NUMERIC_COLS])
 
-
-def main():
-    X_train = pd.read_csv(PROCESSED_DIR / "X_train.csv")
-    y_train = pd.read_csv(PROCESSED_DIR / "y_train.csv").squeeze("columns")
-
-    model = LogisticRegression(random_state=42, max_iter=1000)
+    model = LogisticRegression(class_weight="balanced", random_state=42, max_iter=1000)
     model.fit(X_train, y_train)
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
@@ -93,12 +108,26 @@ def main():
     joblib.dump(feature_columns, FEATURE_COLUMNS_PATH)
     print(f"Saved {len(feature_columns)} feature columns to {FEATURE_COLUMNS_PATH}")
 
-    scaler = fit_scaler_on_raw_data()
     joblib.dump(scaler, SCALER_PATH)
     print(f"Saved scaler to {SCALER_PATH}")
-    print(f"Scaler fitted on raw columns {NUMERIC_COLS}")
-    print("Scaler mean_:", scaler.mean_)
-    print("Scaler scale_:", scaler.scale_)
+    print(f"Scaler fitted on columns {NUMERIC_COLS}")
+
+    print("\n" + "=" * 60)
+    print("TEST SET METRICS")
+    print("=" * 60)
+    y_pred = model.predict(X_test)
+    y_proba = model.predict_proba(X_test)[:, 1]
+    metrics = {
+        "accuracy": accuracy_score(y_test, y_pred),
+        "precision": precision_score(y_test, y_pred),
+        "recall": recall_score(y_test, y_pred),
+        "f1": f1_score(y_test, y_pred),
+        "roc_auc": roc_auc_score(y_test, y_proba),
+    }
+    for key, value in metrics.items():
+        expected = EXPECTED_METRICS[key]
+        match = "OK" if abs(value - expected) < 0.001 else "MISMATCH"
+        print(f"{key}: {value:.4f}  (expected {expected:.4f}) [{match}]")
 
     print("\n" + "=" * 60)
     print("RELOAD SANITY CHECK")
@@ -106,9 +135,6 @@ def main():
     reloaded_model = joblib.load(MODEL_PATH)
     reloaded_columns = joblib.load(FEATURE_COLUMNS_PATH)
     reloaded_scaler = joblib.load(SCALER_PATH)
-
-    X_test = pd.read_csv(PROCESSED_DIR / "X_test.csv")
-    y_test = pd.read_csv(PROCESSED_DIR / "y_test.csv").squeeze("columns")
 
     assert list(X_test.columns) == reloaded_columns, "Column order mismatch between X_test and saved feature columns!"
     assert reloaded_scaler.mean_.shape[0] == len(NUMERIC_COLS), "Reloaded scaler shape mismatch!"

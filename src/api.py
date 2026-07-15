@@ -28,6 +28,7 @@ ONE_HOT_COLS = [
     "Contract",
     "PaperlessBilling",
     "PaymentMethod",
+    "tenure_bucket",
 ]
 INTERNET_DEPENDENT_COLS = [
     "OnlineSecurity",
@@ -37,7 +38,16 @@ INTERNET_DEPENDENT_COLS = [
     "StreamingTV",
     "StreamingMovies",
 ]
-NUMERIC_COLS = ["tenure", "MonthlyCharges", "TotalCharges"]
+SERVICE_COLS = [
+    "OnlineSecurity",
+    "OnlineBackup",
+    "DeviceProtection",
+    "TechSupport",
+    "StreamingTV",
+    "StreamingMovies",
+    "MultipleLines",
+]
+NUMERIC_COLS = ["tenure", "MonthlyCharges", "TotalCharges", "total_services", "avg_monthly_spend"]
 
 # Populated on startup from the saved artifacts (see lifespan below).
 artifacts = {}
@@ -118,6 +128,23 @@ def preprocess(customer: CustomerInput) -> pd.DataFrame:
     df["MultipleLines"] = df["MultipleLines"].replace("No phone service", "No")
     for col in INTERNET_DEPENDENT_COLS:
         df[col] = df[col].replace("No internet service", "No")
+
+    # Same engineered features as save_final_model.py. The upper bin edge
+    # is a fixed float("inf") rather than df["tenure"].max(): the API only
+    # ever processes a single row, so max() would just equal that row's
+    # own tenure value, producing non-monotonic bin edges (e.g. a tenure
+    # of 10 gives bins=[-1, 12, 36, 10]) and crashing pd.cut. "37+" has no
+    # real upper bound anyway, so inf is the correct fixed edge.
+    df["tenure_bucket"] = pd.cut(
+        df["tenure"],
+        bins=[-1, 12, 36, float("inf")],
+        labels=["New", "Mid", "Loyal"],
+    ).astype(str)
+
+    df["total_services"] = (df[SERVICE_COLS] == "Yes").sum(axis=1)
+
+    df["avg_monthly_spend"] = df["TotalCharges"] / df["tenure"]
+    df.loc[df["tenure"] == 0, "avg_monthly_spend"] = df.loc[df["tenure"] == 0, "MonthlyCharges"]
 
     # IMPORTANT: do not pass drop_first=True here. get_dummies() only
     # drops a category when multiple categories are present in the data

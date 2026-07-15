@@ -25,6 +25,9 @@ data/raw (CSV)
     -> src/train_baseline.py       Logistic Regression, logged to MLflow
     -> src/train_compare.py        Random Forest + XGBoost, logged to MLflow
     -> src/train_tuned.py          RandomizedSearchCV tuning of RF/XGBoost, logged to MLflow
+    -> src/train_improved.py       feature engineering (tenure buckets, service counts,
+                                    avg monthly spend) + class imbalance experiments
+                                    (class_weight='balanced', SMOTE), logged to MLflow
     -> src/save_final_model.py     retrains + persists the selected model to models/
     -> src/api.py                  FastAPI serving layer, loads models/*.joblib
     -> Dockerfile                  containerizes the API
@@ -39,17 +42,27 @@ Metrics evaluated on the held-out test set (20% split, stratified), as logged in
 
 | Model | Accuracy | Precision | Recall | F1 | ROC AUC |
 |---|---|---|---|---|---|
-| LogisticRegression | 0.8055 | 0.6582 | 0.5561 | **0.6029** | 0.8422 |
+| LogisticRegression | 0.8055 | 0.6582 | 0.5561 | 0.6029 | 0.8422 |
 | RandomForest | 0.7935 | 0.6436 | 0.4973 | 0.5611 | 0.8287 |
 | XGBoost | 0.7764 | 0.5891 | 0.5214 | 0.5532 | 0.8183 |
-| RandomForest_Tuned | **0.8062** | **0.6747** | 0.5214 | 0.5882 | **0.8435** |
+| RandomForest_Tuned | 0.8062 | 0.6747 | 0.5214 | 0.5882 | **0.8435** |
 | XGBoost_Tuned | 0.7984 | 0.6471 | 0.5294 | 0.5824 | 0.8356 |
+| LogisticRegression_Engineered | 0.8006 | 0.6535 | 0.5294 | 0.5849 | 0.8421 |
+| **LogisticRegression_Balanced** | 0.7360 | 0.5017 | **0.7941** | **0.6149** | 0.8420 |
+| LogisticRegression_SMOTE | 0.7473 | 0.5183 | 0.6818 | 0.5889 | 0.8267 |
 
 ## Final Model Selection
 
-**Logistic Regression** is the model served in production, despite `RandomForest_Tuned` edging it out on accuracy and ROC AUC.
+The plain **Logistic Regression** model was initially selected as the best balance of metrics among the first 5 models trained (Logistic Regression, Random Forest, XGBoost, and their tuned variants) — it had the best F1 (0.6029) and best recall (0.5561) of that group, which matters more than raw accuracy for an imbalanced churn problem where missing a churner is costly.
 
-The reason is F1 and recall on the churn class. In this problem, a **false negative** (a churner the model misses) is more costly than a **false positive** (a customer flagged for retention outreach who wasn't actually going to leave) — a missed churner is lost revenue, while a false alarm just costs a bit of unnecessary retention effort. Logistic Regression has the best F1 (0.6029) of all five models and the best recall (0.5561) among the tuned candidates, meaning it catches more actual churners than the tree-based alternatives, which is what matters most for this business problem.
+A follow-up round of experiments then tested whether feature engineering (tenure buckets, a total-services count, average monthly spend) and class imbalance handling (`class_weight='balanced'`, SMOTE oversampling) could do better. **`LogisticRegression_Balanced`** emerged as the strongest model of all 8 tested:
+
+- **F1 of 0.6149** — the best of every model tried
+- **Recall of 0.7941** — it catches ~79% of actual churners, versus ~56% for the original model
+
+The tradeoff is real and worth stating explicitly: precision drops to 0.50 and accuracy to 0.7360, meaning roughly half of the customers flagged as "will churn" are false alarms. This is an acceptable tradeoff **if** the cost of a retention outreach (an email, a discount offer) is much lower than the cost of a missed churner — which is the typical case in telecom churn prevention, where losing a customer's ongoing revenue far outweighs the cost of an unnecessary discount.
+
+**`LogisticRegression_Balanced` is the model now served by `models/churn_model.joblib` and the FastAPI `/predict` endpoint.** The API's preprocessing was updated to compute the same engineered features and 27-column encoding this model expects, and this was verified end-to-end: all pytest tests pass, and live `/predict` calls against the held-out test set correctly identified churners the previous model had missed (confirmed via `src/verify_api.py`).
 
 ## Running Locally
 
@@ -83,6 +96,8 @@ The API will be available at `http://127.0.0.1:8000`, with interactive docs at `
 docker build -t churn-api .
 docker run -p 8000:8000 churn-api
 ```
+
+Note: the Docker image may need to be rebuilt (`docker build -t churn-api .`) to reflect the latest model artifacts in `models/`, since Docker images are not automatically kept in sync with local file changes.
 
 ## Running Tests
 
@@ -121,6 +136,7 @@ customer-churn-prediction-pipeline/
 │   ├── train_baseline.py
 │   ├── train_compare.py
 │   ├── train_tuned.py
+│   ├── train_improved.py
 │   ├── save_final_model.py
 │   ├── api.py
 │   └── verify_api.py

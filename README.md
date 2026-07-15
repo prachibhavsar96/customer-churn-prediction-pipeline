@@ -55,7 +55,7 @@ Metrics evaluated on the held-out test set (20% split, stratified), as logged in
 
 The plain **Logistic Regression** model was initially selected as the best balance of metrics among the first 5 models trained (Logistic Regression, Random Forest, XGBoost, and their tuned variants) — it had the best F1 (0.6029) and best recall (0.5561) of that group, which matters more than raw accuracy for an imbalanced churn problem where missing a churner is costly.
 
-A follow-up round of experiments then tested whether feature engineering (tenure buckets, a total-services count, average monthly spend) and class imbalance handling (`class_weight='balanced'`, SMOTE oversampling) could do better. **`LogisticRegression_Balanced`** emerged as the strongest model of all 8 tested:
+A follow-up round of experiments then tested whether feature engineering (tenure buckets, a total-services count, average monthly spend) and class imbalance handling (`class_weight='balanced'`, SMOTE oversampling) could do better. **`LogisticRegression_Balanced`** emerged as the strongest model of all 8 tested, with an **ROC-AUC of 0.8420** — the threshold-independent metric that's the more standard yardstick for imbalanced classification problems, confirming strong underlying discriminative power independent of accuracy or where the decision threshold is set:
 
 - **F1 of 0.6149** — the best of every model tried
 - **Recall of 0.7941** — it catches ~79% of actual churners, versus ~56% for the original model
@@ -63,6 +63,18 @@ A follow-up round of experiments then tested whether feature engineering (tenure
 The tradeoff is real and worth stating explicitly: precision drops to 0.50 and accuracy to 0.7360, meaning roughly half of the customers flagged as "will churn" are false alarms. This is an acceptable tradeoff **if** the cost of a retention outreach (an email, a discount offer) is much lower than the cost of a missed churner — which is the typical case in telecom churn prevention, where losing a customer's ongoing revenue far outweighs the cost of an unnecessary discount.
 
 **`LogisticRegression_Balanced` is the model now served by `models/churn_model.joblib` and the FastAPI `/predict` endpoint.** The API's preprocessing was updated to compute the same engineered features and 27-column encoding this model expects, and this was verified end-to-end: all pytest tests pass, and live `/predict` calls against the held-out test set correctly identified churners the previous model had missed (confirmed via `src/verify_api.py`).
+
+### Threshold Selection
+
+A threshold sweep from 0.10 to 0.90 was run on the balanced model's predicted probabilities (`src/threshold_tuning.py`) to check whether the default 0.5 decision threshold was actually a good choice, or just an unexamined default.
+
+F1 turned out to be essentially flat — within about 0.006 — across thresholds 0.40 to 0.65, confirming the default 0.5 threshold is already near-optimal rather than an arbitrary choice; no single threshold in that range meaningfully outperforms another on F1.
+
+The tradeoff curve at nearby thresholds:
+- **0.40**: higher recall (88%) at lower precision (47%) and accuracy (71%)
+- **0.60**: higher precision (55%) and accuracy (77%) at lower recall (70%)
+
+The default **0.50** threshold was kept, striking a reasonable balance — 79% recall, 50% precision, 74% accuracy — without needing further tuning.
 
 ## Running Locally
 
@@ -129,7 +141,6 @@ customer-churn-prediction-pipeline/
 │   ├── churn_model.joblib
 │   ├── feature_columns.joblib
 │   └── scaler.joblib
-├── notebooks/
 ├── src/
 │   ├── eda.py
 │   ├── feature_engineering.py
@@ -138,6 +149,7 @@ customer-churn-prediction-pipeline/
 │   ├── train_tuned.py
 │   ├── train_improved.py
 │   ├── save_final_model.py
+│   ├── threshold_tuning.py
 │   ├── api.py
 │   └── verify_api.py
 ├── tests/

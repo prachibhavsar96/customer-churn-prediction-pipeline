@@ -5,12 +5,14 @@ from typing import Literal
 import joblib
 import pandas as pd
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 MODEL_PATH = MODELS_DIR / "churn_model.joblib"
 FEATURE_COLUMNS_PATH = MODELS_DIR / "feature_columns.joblib"
 SCALER_PATH = MODELS_DIR / "scaler.joblib"
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 ONE_HOT_COLS = [
     "gender",
@@ -175,11 +177,6 @@ def classify_risk(probability: float) -> str:
     return "High"
 
 
-@app.get("/")
-def root():
-    return {"message": "Customer Churn Prediction API. See /docs for interactive API documentation."}
-
-
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -198,3 +195,11 @@ def predict(customer: CustomerInput):
         churn_probability=probability,
         risk_level=classify_risk(probability),
     )
+
+
+# Mounted last and at "/" so it only catches requests that don't match an
+# explicit route above (/health, /predict, and FastAPI's own /docs,
+# /redoc, /openapi.json) -- Starlette matches routes in registration
+# order, so those keep working exactly as before. html=True serves
+# static/index.html for GET /.
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")

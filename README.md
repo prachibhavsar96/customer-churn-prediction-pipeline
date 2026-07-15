@@ -111,6 +111,10 @@ docker run -p 8000:8000 churn-api
 
 Note: the Docker image may need to be rebuilt (`docker build -t churn-api .`) to reflect the latest model artifacts in `models/`, since Docker images are not automatically kept in sync with local file changes.
 
+## Web Interface
+
+Once the API is running (locally or via Docker), a browser-based form is available at the root URL (`http://127.0.0.1:8000`). It lets you fill in a customer's details and see their churn risk visualized as an animated gauge, compared against the dataset's average churn rate (26.5%). `/docs` remains available for raw API testing.
+
 ## Running Tests
 
 ```bash
@@ -152,6 +156,8 @@ customer-churn-prediction-pipeline/
 │   ├── threshold_tuning.py
 │   ├── api.py
 │   └── verify_api.py
+├── static/
+│   └── index.html
 ├── tests/
 │   └── test_api.py
 ├── .dockerignore
